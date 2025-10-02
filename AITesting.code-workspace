@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../semantic-kernel"
+		},
+		{
+			"path": "../agent-framework"
+		}
+	],
+	"settings": {}
+}

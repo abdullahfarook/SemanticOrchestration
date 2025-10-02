@@ -1,9 +1,3 @@
-using CSnakes.Runtime;
-using CSnakes.Runtime.Locators;
-using CSnakes.Runtime.PackageManagement;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.Agents;
 using Microsoft.SemanticKernel.Agents.Orchestration;
@@ -12,31 +6,12 @@ using Microsoft.SemanticKernel.Agents.Orchestration.Sequential;
 using Microsoft.SemanticKernel.Agents.Runtime.InProcess;
 using Microsoft.SemanticKernel.ChatCompletion;
 using SemanticOrchestration;
-
-var pythonHomePath = AppContext.BaseDirectory;
-
-var builder = Host.CreateApplicationBuilder(args);
-builder.Logging.AddFilter("CSnakes", LogLevel.Debug);
-builder.Services
-    .WithPython()
-    .WithHome(pythonHomePath)
-    .FromRedistributable(RedistributablePythonVersion.Python3_10)
-    .WithVirtualEnvironment(Path.Combine(pythonHomePath, ".venv"))
-    .WithPipInstaller();
-
-var app = builder.Build();
-var installer = app.Services.GetRequiredService<IPythonPackageInstaller>();
-// await installer.InstallPackagesFromRequirements("requirements.txt");
-// await installer.InstallPackage("llmsherpa");
-var env = app.Services.GetRequiredService<IPythonEnvironment>();
-
-var hello = env.Hello();
-Console.WriteLine(hello.Greetings("World"));
-Console.WriteLine(hello.ReadPdf("World"));
-
-
+// PythonEmbedTest.Test();
 var kernel = Utils.CreateKernelWithChatCompletion();
 var runtime = new InProcessRuntime();
+
+// Create shared chat history service for all agents
+var sharedChatHistory = new SharedChatHistoryService();
 
 ChatCompletionAgent CreateAgent(string name, string description, string instructions)
 {
@@ -49,27 +24,25 @@ ChatCompletionAgent CreateAgent(string name, string description, string instruct
     };
 }
 
-// Create a wrapper that adds logging to each agent
-LoggedChatCompletionAgent CreateLoggedAgent(string name, string description, string instructions)
+// Create a wrapper that uses shared chat history
+SharedHistoryAgent CreateSharedHistoryAgent(string name, string description, string instructions)
 {
     var agent = CreateAgent(name, description, instructions);
-
-    // Override the InvokeAsync method to add logging
-    return new LoggedChatCompletionAgent(agent);
+    return new SharedHistoryAgent(agent, sharedChatHistory);
 }
 
 // ---------------- INNER ORCHESTRATION ----------------
-var triage = CreateLoggedAgent("InnerTriageAgent", "Inner triage",
+var triage = CreateSharedHistoryAgent("InnerTriageAgent", "Inner triage",
     "Decide whether user needs academic, career, or mental support.");
-var academic = CreateLoggedAgent("AcademicAgent", "Academic expert", "Answer academic questions.");
-var career = CreateLoggedAgent("CareerAgent", "Career advisor", "Help with jobs and careers.");
+var academic = CreateSharedHistoryAgent("AcademicAgent", "Academic expert", "Answer academic questions.");
+var career = CreateSharedHistoryAgent("CareerAgent", "Career advisor", "Help with jobs and careers.");
 // Build MentalAgent as a SequentialOrchestration of two evaluators: mental and physical health
-var mentalEvaluator = CreateLoggedAgent(
+var mentalEvaluator = CreateSharedHistoryAgent(
     "MentalHealthEvaluator",
     "Evaluates mental health concerns",
     "Assess the user's mental health concerns. Provide supportive, empathetic guidance and identify if professional help may be needed. Keep it concise and safe.");
 
-var physicalEvaluator = CreateLoggedAgent(
+var physicalEvaluator = CreateSharedHistoryAgent(
     "PhysicalHealthEvaluator",
     "Evaluates physical health concerns",
     "You must first ask the user to describe their symptoms in detail (onset, duration, severity, triggers, relevant medical history). Do not provide guidance until they've listed symptoms. After they respond, offer general wellness suggestions and clearly advise consulting a healthcare professional when appropriate. Keep it concise, supportive, and safe. End your first reply with a single clear question requesting their symptoms.");
@@ -125,9 +98,9 @@ var studentSupportAgent = new OrchestrationAgent(
 );
 
 // ---------------- OUTER ORCHESTRATION ----------------
-var superTriage = CreateLoggedAgent("superTriage", "Outer triage",
+var superTriage = CreateSharedHistoryAgent("superTriage", "Outer triage",
     "Route user requests either to StudentSupportAgent (for academic/career/mental) or to BillingAgent (for invoices).");
-var billingAgent = CreateLoggedAgent("billing", "Billing expert",
+var billingAgent = CreateSharedHistoryAgent("billing", "Billing expert",
     "Answer questions about invoices, payments, and refunds.");
 
 var superHandoffs = OrchestrationHandoffs
@@ -161,6 +134,10 @@ Console.WriteLine("Enter a prompt (academic, career, mental, or billing topic):"
 string prompt = Console.ReadLine() ?? "I need help with paying tuition invoice.";
 
 Console.WriteLine($"\n🚀 [Main] Starting orchestration with: \"{prompt}\"");
+Console.WriteLine($"📊 [SharedHistory] Initial message count: {sharedChatHistory.MessageCount}");
+
+// Clean any problematic messages before starting
+sharedChatHistory.CleanProblematicMessages();
 
 // Start the runtime
 await runtime.StartAsync();
@@ -171,6 +148,12 @@ string text = await result.GetValueAsync(TimeSpan.FromSeconds(300));
 
 Console.WriteLine("\n=== DONE ===");
 Console.WriteLine(text);
+Console.WriteLine($"📊 [SharedHistory] Final message count: {sharedChatHistory.MessageCount}");
+Console.WriteLine($"📝 [SharedHistory] Total conversation history:");
+foreach (var message in sharedChatHistory.GetAllMessages())
+{
+    Console.WriteLine($"  {message.Role}: {message.Content}");
+}
 
 await runtime.RunUntilIdleAsync();
 
